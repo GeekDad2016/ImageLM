@@ -2,9 +2,9 @@
 
 ## Project Overview
 
-This repository contains `nanochat`, a full-stack implementation of a ChatGPT-like Large Language Model (LLM). The project is designed to be minimal, hackable, and dependency-lite, allowing for the entire pipeline to be run on a single 8XH100 node. The project covers tokenization, pretraining, finetuning, evaluation, and inference, with a simple web UI for interacting with the trained model.
+This repository contains `nanochat`, a full-stack implementation of a ChatGPT-like Large Language Model (LLM). The project has been modified to use an image-based input instead of a text-based one. This change was made to improve information compression, allow for a more general information stream, and enable the use of bidirectional attention by default.
 
-The core of the project is a GPT model implemented in PyTorch, with a custom tokenizer built in Rust. The project also includes a suite of scripts for training and evaluating the model, as well as a simple web UI for interacting with the trained model.
+The core of the project is a GPT model implemented in PyTorch, which now includes a Vision Transformer (ViT) to process image-based inputs. The tokenizer has been removed, and the model now uses bidirectional attention by default. The project also includes a suite of scripts for training and evaluating the model, as well as a simple web UI for interacting with the trained model.
 
 ## Building and Running
 
@@ -28,7 +28,7 @@ The project uses `uv` for package management and `torchrun` for distributed trai
     ```bash
     bash speedrun.sh
     ```
-    This script will download the dataset, train the tokenizer, pretrain the model, and run evaluations. The entire process takes about 4 hours on an 8XH100 node.
+    This script will download the dataset, pretrain the model, and run evaluations. The entire process takes about 4 hours on an 8XH100 node.
 
 3.  **Chat with the model:**
     Once the `speedrun.sh` script has finished, you can chat with the model via a web UI:
@@ -48,8 +48,9 @@ The project can also be run on a CPU, although it will be much slower. The `dev/
 
 *   **Configuration:** The project uses a custom configuration system in `nanochat/configurator.py`. Configuration can be overridden via a configuration file or command-line arguments.
 *   **Logging:** The project uses `wandb` for logging, but it is optional. To use `wandb`, you need to log in to your `wandb` account and set the `WANDB_RUN` environment variable.
-*   **Testing:** The project has a small suite of tests that can be run with `pytest`:
-    ```bash
-    python -m pytest tests/test_rustbpe.py -v -s
-    ```
+*   **Testing:** The project has a small suite of tests that can be run with `pytest`.
 *   **Reporting:** The project includes a `report` module that generates a markdown report of the training and evaluation results. The report is saved in the `report.md` file.
+
+## Development Workflow
+
+I will now update the local git repository after each iteration and commit to master when asked.

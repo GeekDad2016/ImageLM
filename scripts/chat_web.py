@@ -47,7 +47,7 @@ from dataclasses import dataclass
 from contextlib import nullcontext
 from nanochat.common import compute_init, autodetect_device_type
 from nanochat.checkpoint_manager import load_model
-from nanochat.engine import Engine
+from nanochat.dataloader import image_generating_distributed_data_loader as get_distributed_data_loader
 
 # Abuse prevention limits
 MAX_MESSAGES_PER_REQUEST = 500

@@ -22,6 +22,7 @@ from nanochat.checkpoint_manager import load_model
 from nanochat.checkpoint_manager import save_checkpoint
 from nanochat.engine import Engine
 from scripts.chat_eval import run_chat_eval
+from nanochat.dataloader import image_generating_distributed_data_loader as get_distributed_data_loader
 
 from tasks.common import TaskMixture
 from tasks.arc import ARC

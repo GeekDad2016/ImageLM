@@ -48,7 +48,10 @@ def parquets_iter_batched(split, start=0, step=1):
     """
     assert split in ["train", "val"], "split must be 'train' or 'val'"
     parquet_paths = list_parquet_files()
-    parquet_paths = parquet_paths[:-1] if split == "train" else parquet_paths[-1:]
+    if split == "train":
+        parquet_paths = parquet_paths[:-1]
+    else:
+        parquet_paths = parquet_paths[-1:]
     for filepath in parquet_paths:
         pf = pq.ParquetFile(filepath)
         for rg_idx in range(start, pf.num_row_groups, step):

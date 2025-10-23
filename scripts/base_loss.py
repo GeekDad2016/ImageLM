@@ -11,7 +11,7 @@ from contextlib import nullcontext
 import torch
 from nanochat.checkpoint_manager import load_model
 from nanochat.common import compute_init, print0, compute_cleanup, autodetect_device_type
-from nanochat.dataloader import tokenizing_distributed_data_loader
+from nanochat.dataloader import image_generating_distributed_data_loader as get_distributed_data_loader
 from nanochat.tokenizer import get_token_bytes
 from nanochat.loss_eval import evaluate_bpb
 from nanochat.engine import Engine

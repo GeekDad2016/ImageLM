@@ -27,6 +27,7 @@ from nanochat.common import compute_init, compute_cleanup, print0, get_base_dir,
 from nanochat.checkpoint_manager import save_checkpoint, load_model
 from nanochat.engine import Engine
 from tasks.gsm8k import GSM8K
+from nanochat.dataloader import image_generating_distributed_data_loader as get_distributed_data_loader
 
 # RL hyperparameters
 run = "dummy" # wandb run name

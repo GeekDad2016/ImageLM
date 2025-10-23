@@ -8,7 +8,7 @@ import argparse
 import torch
 from nanochat.common import compute_init, autodetect_device_type
 from contextlib import nullcontext
-from nanochat.engine import Engine
+from nanochat.dataloader import image_generating_distributed_data_loader as get_distributed_data_loader
 from nanochat.checkpoint_manager import load_model
 
 parser = argparse.ArgumentParser(description='Chat with the model')

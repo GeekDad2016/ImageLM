@@ -88,7 +88,7 @@ class CausalSelfAttention(nn.Module):
         if kv_cache is None or Tq == Tk:
             # During training (no KV cache), attend as usual with causal attention
             # And even if there is KV cache, we can still use this simple version when Tq == Tk
-            y = F.scaled_dot_product_attention(q, k, v, is_causal=True, enable_gqa=enable_gqa)
+            y = F.scaled_dot_product_attention(q, k, v, enable_gqa=enable_gqa)
         elif Tq == 1:
             # During inference but with a single query in this forward pass:
             # The query has to attend to all the keys/values in the cache
@@ -135,10 +135,23 @@ class Block(nn.Module):
         return x
 
 
+from nanochat.vision_transformer import VisionTransformer
+
 class GPT(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.config = config
+
+        self.vision_transformer = VisionTransformer(
+            image_size=256,
+            patch_size=32,
+            num_classes=config.n_embd, # Project to GPT embedding dim
+            dim=512,
+            depth=6,
+            heads=8,
+            mlp_dim=1024
+        )
+
         self.transformer = nn.ModuleDict({
             "wte": nn.Embedding(config.vocab_size, config.n_embd),
             "h": nn.ModuleList([Block(config, layer_idx) for layer_idx in range(config.n_layer)]),
@@ -241,8 +254,15 @@ class GPT(nn.Module):
                 group["initial_lr"] = group["lr"]
         return optimizers
 
-    def forward(self, idx, targets=None, kv_cache=None, loss_reduction='mean'):
+    def forward(self, idx, targets=None, kv_cache=None, loss_reduction='mean', image_input=None):
         B, T = idx.size()
+
+        if image_input is not None:
+            image_features = self.vision_transformer(image_input)
+            # TODO: Project image_features to the correct dimension and use as input
+            x = image_features.unsqueeze(1)
+        else:
+            x = self.transformer.wte(idx)
 
         # Grab the rotary embeddings for the current sequence length (they are of shape (1, seq_len, 1, head_dim))
         assert T <= self.cos.size(1), f"Sequence length grew beyond the rotary embeddings cache: {T} > {self.cos.size(1)}"
@@ -253,7 +273,6 @@ class GPT(nn.Module):
         cos_sin = self.cos[:, T0:T0+T], self.sin[:, T0:T0+T] # truncate cache to current sequence length
 
         # Forward the trunk of the Transformer
-        x = self.transformer.wte(idx)
         x = norm(x)
         for block in self.transformer.h:
             x = block(x, cos_sin, kv_cache)

@@ -18,6 +18,7 @@ import torch.distributed as dist
 from nanochat.common import compute_init, compute_cleanup, get_dist_info, print0, autodetect_device_type
 from nanochat.checkpoint_manager import load_model
 from nanochat.engine import Engine
+from nanochat.dataloader import image_generating_distributed_data_loader as get_distributed_data_loader
 
 from tasks.humaneval import HumanEval
 from tasks.mmlu import MMLU
