@@ -25,7 +25,6 @@ from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, p
 from nanochat.checkpoint_manager import save_checkpoint
 from nanochat.loss_eval import evaluate_bpb
 from nanochat.engine import Engine
-from scripts.base_eval import evaluate_model
 print_banner()
 
 # -----------------------------------------------------------------------------
