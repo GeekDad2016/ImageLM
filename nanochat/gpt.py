@@ -134,6 +134,8 @@ class GPT(nn.Module):
             heads=8,
             mlp_dim=1024
         )
+        self.image_projection = nn.Linear(config.n_embd, config.n_embd)
+
 
         self.transformer = nn.ModuleDict({
             "wte": nn.Embedding(config.vocab_size, config.n_embd),
@@ -210,7 +212,7 @@ class GPT(nn.Module):
         model_dim = self.config.n_embd
         ddp, rank, local_rank, world_size = get_dist_info()
         # Separate out all parameters into 3 groups (matrix, embedding, lm_head)
-        matrix_params = list(self.transformer.h.parameters()) + [p for p in self.vision_transformer.parameters() if p.ndim == 2]
+        matrix_params = list(self.transformer.h.parameters()) + [p for p in self.vision_transformer.parameters() if p.ndim == 2] + list(self.image_projection.parameters())
         embedding_params = list(self.transformer.wte.parameters()) + [p for p in self.vision_transformer.parameters() if p.ndim != 2]
         lm_head_params = list(self.lm_head.parameters())
         assert len(list(self.parameters())) == len(matrix_params) + len(embedding_params) + len(lm_head_params)
@@ -242,8 +244,7 @@ class GPT(nn.Module):
             B, C, H, W = image_input.size()
             T = self.vision_transformer.num_patches
             image_features = self.vision_transformer(image_input)
-            # TODO: Project image_features to the correct dimension and use as input
-            x = image_features.unsqueeze(1)
+            x = self.image_projection(image_features)
         else:
             B, T = idx.size()
             x = self.transformer.wte(idx)

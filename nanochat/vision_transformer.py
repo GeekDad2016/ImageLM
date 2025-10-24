@@ -18,7 +18,7 @@ class VisionTransformer(nn.Module):
             num_layers=depth
         )
         self.to_cls_token = nn.Identity()
-        self.mlp_head = nn.Linear(dim, num_classes)
+        self.mlp_head = nn.Linear(dim, dim)
 
     def forward(self, img):
         p = self.patch_size
