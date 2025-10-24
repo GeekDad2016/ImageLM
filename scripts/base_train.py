@@ -22,7 +22,6 @@ import torch
 from nanochat.gpt import GPT, GPTConfig
 from nanochat.dataloader import image_generating_distributed_data_loader as get_distributed_data_loader
 from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, print_banner, get_base_dir, autodetect_device_type
-from nanochat.tokenizer import get_tokenizer, get_token_bytes
 from nanochat.checkpoint_manager import save_checkpoint
 from nanochat.loss_eval import evaluate_bpb
 from nanochat.engine import Engine
@@ -75,76 +74,11 @@ get_max_memory = torch.cuda.max_memory_allocated if device_type == "cuda" else l
 use_dummy_wandb = run == "dummy" or not master_process
 wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nanochat", name=run, config=user_config)
 
-# Tokenizer will be useful for evaluation, also we need the vocab size
-tokenizer = get_tokenizer()
-token_bytes = get_token_bytes(device=device)
-vocab_size = tokenizer.get_vocab_size()
-print0(f"Vocab size: {vocab_size:,}")
-
-# Model kwargs are derived from the desired depth of the model
-num_layers = depth
-model_dim = depth * 64 # aspect ratio 64 (usually this is varied from 64 -> 128 as model size increases)
-num_heads = max(1, (model_dim + 127) // 128) # head dim 128 (the division here is ceil div)
-num_kv_heads = num_heads # default is 1:1 GQA (Group Query Attention) ratio (i.e. GQA is disabled)
-print0(f"num_layers: {num_layers}")
-print0(f"model_dim: {model_dim}")
-print0(f"num_heads: {num_heads}")
-print0(f"num_kv_heads: {num_kv_heads}")
-
-# Optimizer / data / training length related hyperparameters
-# figure out the needed gradient accumulation to reach the desired total batch size
-tokens_per_fwdbwd = device_batch_size * max_seq_len # tokens per iteration for a single rank
-world_tokens_per_fwdbwd = tokens_per_fwdbwd * ddp_world_size # total tokens per iteration for all ranks
-assert total_batch_size % world_tokens_per_fwdbwd == 0
-grad_accum_steps = total_batch_size // world_tokens_per_fwdbwd
-print0(f"Tokens / micro-batch / rank: {device_batch_size} x {max_seq_len} = {tokens_per_fwdbwd:,}")
-print0(f"Tokens / micro-batch: {world_tokens_per_fwdbwd:,}")
-print0(f"Total batch size {total_batch_size:,} => gradient accumulation steps: {grad_accum_steps}")
-# -----------------------------------------------------------------------------
-# Initialize the Model
-model_config_kwargs = dict(sequence_len=max_seq_len, vocab_size=vocab_size, n_layer=num_layers, n_head=num_heads, n_kv_head=num_kv_heads, n_embd=model_dim)
-with torch.device("meta"):
-    model_config = GPTConfig(**model_config_kwargs)
-    model = GPT(model_config)
-model.to_empty(device=device)
-model.init_weights()
-orig_model = model # original, uncompiled model, for saving raw model state_dict
-model = torch.compile(model, dynamic=False) # TODO: dynamic True/False think through
-num_params = sum(p.numel() for p in model.parameters())
-print0(f"Number of parameters: {num_params:,}")
-num_flops_per_token = model.estimate_flops()
-print0(f"Estimated FLOPs per token: {num_flops_per_token:e}")
-
-# Calculate number of iterations. Either it is given, or from target flops, or from target data:param ratio (in that order)
-assert num_iterations > 0 or target_param_data_ratio > 0 or target_flops > 0
-if num_iterations > 0:
-    print0(f"Using user-provided number of iterations: {num_iterations:,}")
-elif target_flops > 0:
-    # calculate the number of iterations from the target flops
-    num_iterations = round(target_flops / (num_flops_per_token * total_batch_size))
-    print0(f"Calculated number of iterations from target FLOPs: {num_iterations:,}")
-elif target_param_data_ratio > 0:
-    # calculate the number of iterations from the target param data ratio
-    target_tokens = target_param_data_ratio * num_params
-    num_iterations = target_tokens // total_batch_size
-    print0(f"Calculated number of iterations from target data:param ratio: {num_iterations:,}")
-else:
-    raise ValueError("No training horizon specified")
-total_tokens = total_batch_size * num_iterations
-print0(f"Total number of training tokens: {total_tokens:,}")
-print0(f"Tokens : Params ratio: {total_batch_size * num_iterations / num_params:.2f}") # Chinchilla is ~20
-print0(f"Total training FLOPs estimate: {num_flops_per_token * total_tokens:e}")
-
-# -----------------------------------------------------------------------------
-# Initialize the Optimizer (Muon for Linear layers, AdamW for embedding and lm_head)
-optimizers = model.setup_optimizers(unembedding_lr=unembedding_lr, embedding_lr=embedding_lr, matrix_lr=matrix_lr, weight_decay=weight_decay)
-adamw_optimizer, muon_optimizer = optimizers
 
 # Initialize the DataLoaders for train/val
 base_dir = get_base_dir()
-tokens_dir = os.path.join(base_dir, "tokenized_data")
-train_loader = tokenizing_distributed_data_loader(device_batch_size, max_seq_len, split="train", device=device)
-build_val_loader = lambda: tokenizing_distributed_data_loader(device_batch_size, max_seq_len, split="val", device=device)
+train_loader = get_distributed_data_loader(device_batch_size, max_seq_len, split="train", device=device)
+build_val_loader = lambda: get_distributed_data_loader(device_batch_size, max_seq_len, split="val", device=device)
 x, y = next(train_loader) # kick off load of the very first batch of data
 
 # -----------------------------------------------------------------------------
@@ -183,80 +117,6 @@ for step in range(num_iterations + 1):
     last_step = step == num_iterations
     flops_so_far = num_flops_per_token * total_batch_size * step
 
-    # once in a while: evaluate the val bpb (all ranks participate)
-    if last_step or step % eval_every == 0:
-        model.eval()
-        val_loader = build_val_loader()
-        eval_steps = eval_tokens // (device_batch_size * max_seq_len * ddp_world_size)
-        with autocast_ctx:
-            val_bpb = evaluate_bpb(model, val_loader, eval_steps, token_bytes)
-        print0(f"Step {step:05d} | Validation bpb: {val_bpb:.4f}")
-        if val_bpb < min_val_bpb:
-            min_val_bpb = val_bpb
-        wandb_run.log({
-            "step": step,
-            "total_training_flops": flops_so_far,
-            "total_training_time": total_training_time,
-            "val/bpb": val_bpb,
-        })
-        model.train()
-
-    # once in a while: estimate the CORE metric (all ranks participate)
-    # use the original uncompiled model because the inputs keep changing shape
-    results = {}
-    if core_metric_every > 0 and (last_step or (step > 0 and step % core_metric_every == 0)):
-        model.eval()
-        with autocast_ctx:
-            results = evaluate_model(orig_model, tokenizer, device, max_per_task=core_metric_max_per_task)
-        print0(f"Step {step:05d} | CORE metric: {results['core_metric']:.4f}")
-        wandb_run.log({
-            "step": step,
-            "total_training_flops": flops_so_far,
-            "core_metric": results["core_metric"],
-            "centered_results": results["centered_results"],
-        })
-        model.train()
-
-    # once in a while: sample from the model (only on master process)
-    # use the original uncompiled model because the inputs keep changing shape
-    if master_process and (last_step or (step > 0 and step % sample_every == 0)):
-        model.eval()
-        prompts = [
-            "The capital of France is",
-            "The chemical symbol of gold is",
-            "If yesterday was Friday, then tomorrow will be",
-            "The opposite of hot is",
-            "The planets of the solar system are:",
-            "My favorite color is",
-            "If 5*x + 3 = 13, then x is",
-        ]
-        engine = Engine(orig_model, tokenizer) # use orig_model to avoid recompilation
-        for prompt in prompts:
-            tokens = tokenizer(prompt, prepend="<|bos|>")
-            with autocast_ctx:
-                sample, _ = engine.generate_batch(tokens, num_samples=1, max_tokens=16, temperature=0)
-            print0(tokenizer.decode(sample[0]))
-        model.train()
-
-    # save checkpoint at the end of the run (only on master process)
-    if master_process and last_step:
-        output_dirname = model_tag if model_tag else f"d{depth}" # e.g. d12
-        checkpoint_dir = os.path.join(base_dir, "base_checkpoints", output_dirname)
-        save_checkpoint(
-            checkpoint_dir,
-            step,
-            orig_model.state_dict(),
-            [opt.state_dict() for opt in optimizers], # TODO: make sure saving across ranks is done correctly
-            {
-                "step": step,
-                "val_bpb": val_bpb, # loss at last step
-                "model_config": model_config_kwargs,
-                "user_config": user_config, # inputs to the training script
-                "device_batch_size": device_batch_size,
-                "max_seq_len": max_seq_len,
-            }
-        )
-
     if last_step:
         break
 
@@ -267,7 +127,9 @@ for step in range(num_iterations + 1):
     t0 = time.time()
     for micro_step in range(grad_accum_steps):
         with autocast_ctx:
-            loss = model(x, y)
+            dummy_idx = torch.zeros_like(x, dtype=torch.long)
+            dummy_y = torch.zeros_like(x, dtype=torch.long)
+            loss = model(dummy_idx, dummy_y, image_input=x)
         train_loss = loss.detach() # for logging
         loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
         loss.backward()

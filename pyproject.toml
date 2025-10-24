@@ -26,5 +26,7 @@ dependencies = [
     "pyarrow>=15.0.0",
 ]
 [project.optional-dependencies]
-gpu = [][tool.setuptools.packages.find]
+gpu = []
+
+[tool.setuptools.packages.find]
 include = ["nanochat*"]
