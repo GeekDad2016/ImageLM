@@ -73,6 +73,62 @@ get_max_memory = torch.cuda.max_memory_allocated if device_type == "cuda" else l
 use_dummy_wandb = run == "dummy" or not master_process
 wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nanochat", name=run, config=user_config)
 
+vocab_size = 32000
+
+# Model kwargs are derived from the desired depth of the model
+num_layers = depth
+model_dim = depth * 64 # aspect ratio 64 (usually this is varied from 64 -> 128 as model size increases)
+num_heads = max(1, (model_dim + 127) // 128) # head dim 128 (the division here is ceil div)
+num_kv_heads = num_heads # default is 1:1 GQA (Group Query Attention) ratio (i.e. GQA is disabled)
+print0(f"num_layers: {num_layers}")
+print0(f"model_dim: {model_dim}")
+print0(f"num_heads: {num_heads}")
+print0(f"num_kv_heads: {num_kv_heads}")
+
+# Optimizer / data / training length related hyperparameters
+# figure out the needed gradient accumulation to reach the desired total batch size
+grad_accum_steps = 1
+print0(f"Total batch size {total_batch_size:,} => gradient accumulation steps: {grad_accum_steps}")
+# -----------------------------------------------------------------------------
+# Initialize the Model
+model_config_kwargs = dict(sequence_len=max_seq_len, vocab_size=vocab_size, n_layer=num_layers, n_head=num_heads, n_kv_head=num_kv_heads, n_embd=model_dim)
+with torch.device("meta"):
+    model_config = GPTConfig(**model_config_kwargs)
+    model = GPT(model_config)
+model.to_empty(device=device)
+model.init_weights()
+orig_model = model # original, uncompiled model, for saving raw model state_dict
+model = torch.compile(model, dynamic=False) # TODO: dynamic True/False think through
+num_params = sum(p.numel() for p in model.parameters())
+print0(f"Number of parameters: {num_params:,}")
+num_flops_per_token = model.estimate_flops()
+print0(f"Estimated FLOPs per token: {num_flops_per_token:e}")
+
+# Calculate number of iterations. Either it is given, or from target flops, or from target data:param ratio (in that order)
+assert num_iterations > 0 or target_param_data_ratio > 0 or target_flops > 0
+if num_iterations > 0:
+    print0(f"Using user-provided number of iterations: {num_iterations:,}")
+elif target_flops > 0:
+    # calculate the number of iterations from the target flops
+    num_iterations = round(target_flops / (num_flops_per_token * total_batch_size))
+    print0(f"Calculated number of iterations from target FLOPs: {num_iterations:,}")
+elif target_param_data_ratio > 0:
+    # calculate the number of iterations from the target param data ratio
+    target_tokens = target_param_data_ratio * num_params
+    num_iterations = target_tokens // total_batch_size
+    print0(f"Calculated number of iterations from target data:param ratio: {num_iterations:,}")
+else:
+    raise ValueError("No training horizon specified")
+total_tokens = total_batch_size * num_iterations
+print0(f"Total number of training tokens: {total_tokens:,}")
+print0(f"Tokens : Params ratio: {total_batch_size * num_iterations / num_params:.2f}") # Chinchilla is ~20
+print0(f"Total training FLOPs estimate: {num_flops_per_token * total_tokens:e}")
+
+# -----------------------------------------------------------------------------
+# Initialize the Optimizer (Muon for Linear layers, AdamW for embedding and lm_head)
+optimizers = model.setup_optimizers(unembedding_lr=unembedding_lr, embedding_lr=embedding_lr, matrix_lr=matrix_lr, weight_decay=weight_decay)
+adamw_optimizer, muon_optimizer = optimizers
+
 
 # Initialize the DataLoaders for train/val
 base_dir = get_base_dir()
@@ -126,8 +182,8 @@ for step in range(num_iterations + 1):
     t0 = time.time()
     for micro_step in range(grad_accum_steps):
         with autocast_ctx:
-            dummy_idx = torch.zeros_like(x, dtype=torch.long)
-            dummy_y = torch.zeros_like(x, dtype=torch.long)
+            dummy_idx = torch.zeros((device_batch_size, max_seq_len), dtype=torch.long, device=device)
+            dummy_y = torch.zeros((device_batch_size, max_seq_len), dtype=torch.long, device=device)
             loss = model(dummy_idx, dummy_y, image_input=x)
         train_loss = loss.detach() # for logging
         loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
@@ -156,13 +212,12 @@ for step in range(num_iterations + 1):
     smooth_train_loss = ema_beta * smooth_train_loss + (1 - ema_beta) * train_loss.item() # EMA the training loss
     debiased_smooth_loss = smooth_train_loss / (1 - ema_beta**(step + 1)) # debias the EMA
     pct_done = 100 * step / num_iterations
-    tok_per_sec = int(world_tokens_per_fwdbwd / dt)
     flops_per_sec = num_flops_per_token * total_batch_size / dt
     promised_flops_per_sec_h100 = 989e12 * ddp_world_size # bfloat16 H100 SXM and without 2:4 sparsity
     mfu = 100 * flops_per_sec / promised_flops_per_sec_h100 # in %
     if step > 10:
         total_training_time += dt # only count the time after the first 10 steps
-    print0(f"step {step:05d}/{num_iterations:05d} ({pct_done:.2f}%) | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | tok/sec: {tok_per_sec:,} | mfu: {mfu:.2f} | total time: {total_training_time/60:.2f}m")
+    print0(f"step {step:05d}/{num_iterations:05d} ({pct_done:.2f}%) | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | mfu: {mfu:.2f} | total time: {total_training_time/60:.2f}m")
     if step % 100 == 0:
         wandb_run.log({
             "step": step,
@@ -171,7 +226,6 @@ for step in range(num_iterations + 1):
             "train/loss": debiased_smooth_loss,
             "train/lrm": lrm,
             "train/dt": dt,
-            "train/tok_per_sec": tok_per_sec,
             "train/mfu": mfu,
         })
 

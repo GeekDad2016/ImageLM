@@ -210,8 +210,8 @@ class GPT(nn.Module):
         model_dim = self.config.n_embd
         ddp, rank, local_rank, world_size = get_dist_info()
         # Separate out all parameters into 3 groups (matrix, embedding, lm_head)
-        matrix_params = list(self.transformer.h.parameters())
-        embedding_params = list(self.transformer.wte.parameters())
+        matrix_params = list(self.transformer.h.parameters()) + [p for p in self.vision_transformer.parameters() if p.ndim == 2]
+        embedding_params = list(self.transformer.wte.parameters()) + [p for p in self.vision_transformer.parameters() if p.ndim != 2]
         lm_head_params = list(self.lm_head.parameters())
         assert len(list(self.parameters())) == len(matrix_params) + len(embedding_params) + len(lm_head_params)
         # Create the AdamW optimizer for the embedding and lm_head
@@ -238,13 +238,14 @@ class GPT(nn.Module):
         return optimizers
 
     def forward(self, idx, targets=None, kv_cache=None, loss_reduction='mean', image_input=None):
-        B, T = idx.size()
-
         if image_input is not None:
+            B, C, H, W = image_input.size()
+            T = self.vision_transformer.num_patches
             image_features = self.vision_transformer(image_input)
             # TODO: Project image_features to the correct dimension and use as input
             x = image_features.unsqueeze(1)
         else:
+            B, T = idx.size()
             x = self.transformer.wte(idx)
 
         # Grab the rotary embeddings for the current sequence length (they are of shape (1, seq_len, 1, head_dim))
