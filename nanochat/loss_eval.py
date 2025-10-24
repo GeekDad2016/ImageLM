@@ -6,7 +6,7 @@ import torch
 import torch.distributed as dist
 
 @torch.no_grad()
-def evaluate_bpb(model, batches, steps, token_bytes):
+def evaluate_bpb(model, batches, steps):
     """
     Instead of the naive 'mean loss', this function returns the bits per byte (bpb),
     which is a tokenization vocab size-indepedent metric, meaning you are still comparing
@@ -19,10 +19,6 @@ def evaluate_bpb(model, batches, steps, token_bytes):
     1) All "normal" tokens are normalized by the length of the token in bytes
     2) No special tokens (e.g. <|bos|>) are included in the metric - they are masked out.
     3) No actively masked tokens (using ignore_index of e.g. -1) are included in the metric.
-
-    In addition to evaluate_loss, we need the token_bytes tensor:
-    It is a 1D tensor of shape (vocab_size,), indicating the number of bytes for
-    each token id, or 0 if the token is to not be counted (e.g. special tokens).
     """
     # record the losses
     total_nats = torch.tensor(0.0, dtype=torch.float32, device=model.get_device())
@@ -41,14 +37,14 @@ def evaluate_bpb(model, batches, steps, token_bytes):
             # map valid targets to their byte length; ignored targets contribute 0 bytes
             num_bytes2d = torch.where(
                 valid,
-                token_bytes[y_safe],
-                torch.zeros_like(y, dtype=token_bytes.dtype)
+                torch.ones_like(y, dtype=torch.int64),
+                torch.zeros_like(y, dtype=torch.int64)
             )
             total_nats += (loss2d * (num_bytes2d > 0)).sum()
             total_bytes += num_bytes2d.sum()
         else:
             # fast path: no ignored targets, safe to index directly
-            num_bytes2d = token_bytes[y]
+            num_bytes2d = torch.ones_like(y, dtype=torch.int64)
             total_nats += (loss2d * (num_bytes2d > 0)).sum()
             total_bytes += num_bytes2d.sum()
     # sum reduce across all ranks

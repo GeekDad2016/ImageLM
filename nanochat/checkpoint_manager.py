@@ -10,7 +10,7 @@ import torch
 
 from nanochat.common import get_base_dir
 from nanochat.gpt import GPT, GPTConfig
-from nanochat.tokenizer import get_tokenizer
+
 from nanochat.common import setup_default_logging
 
 # Set up logging
@@ -60,7 +60,6 @@ def build_model(checkpoint_dir, step, device, phase):
     A bunch of repetitive code to build a model from a given checkpoint.
     Returns:
     - base model - uncompiled, not wrapped in DDP
-    - tokenizer
     - meta data saved during base model training
     """
     assert phase in ["train", "eval"], f"Invalid phase: {phase}"
@@ -81,11 +80,7 @@ def build_model(checkpoint_dir, step, device, phase):
         model.eval()
     else:
         model.train()
-    # Load the Tokenizer
-    tokenizer = get_tokenizer()
-    # Sanity check: compatibility between model and tokenizer
-    assert tokenizer.get_vocab_size() == model_config_kwargs["vocab_size"]
-    return model, tokenizer, meta_data
+    return model, meta_data
 
 
 def find_largest_model(checkpoint_dir):
@@ -131,8 +126,8 @@ def load_model_from_dir(checkpoints_dir, device, phase, model_tag=None, step=Non
     assert step is not None, f"No checkpoints found in {checkpoint_dir}"
     # build the model
     log0(f"Loading model from {checkpoint_dir} with step {step}")
-    model, tokenizer, meta_data = build_model(checkpoint_dir, step, device, phase)
-    return model, tokenizer, meta_data
+    model, meta_data = build_model(checkpoint_dir, step, device, phase)
+    return model, meta_data
 
 def load_model(source, *args, **kwargs):
     model_dir = {
